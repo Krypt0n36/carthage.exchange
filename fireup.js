@@ -3,8 +3,13 @@ const jwt = require('jsonwebtoken');
 const { pool } = require("./database");
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
-var cors = require('cors')
+var cors = require('cors');
+const { default: axios } = require('axios');
+const path = require('path');
 
+
+
+let systemFee = 2.5;
 
 const app = express()
 
@@ -12,11 +17,12 @@ app.use(express.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.urlencoded());
 app.use(cors())
+app.use(express.static('public'))
 
 
-app.get('/', (req, res) => {
-    res.send('Hello');
-})
+
+
+
 
 function checkExistance(table, { name, value, type = 'string' }, next) {
     if (type == 'string') {
@@ -224,8 +230,9 @@ app.post('/api/login', (req, res) => {
 
 app.post('/api/password_reset/generate_code', (req, res) => {
     const oblig_params = {
-        identifier: req.query.identifier,
+        identifier: req.body.identifier,
     }
+    
     let errors = [];
     for (const key in oblig_params) {
         if (!oblig_params[key] || oblig_params[key].length == 0) {
@@ -238,6 +245,7 @@ app.post('/api/password_reset/generate_code', (req, res) => {
     }
     // check if account exists
     const query = `SELECT id FROM users WHERE email='${oblig_params.identifier}' OR username='${oblig_params.identifier}' OR phone_number='${oblig_params.identifier}'`;
+    console.log(query)
     pool.query(query)
         .then(({ rows }) => {
             if (rows.length == 1) {
@@ -255,6 +263,8 @@ app.post('/api/password_reset/generate_code', (req, res) => {
                         console.log(err);
                         res.send({ status: 'fatal_error', label: 'Database connection error @reset_save.' })
                     })
+            }else{
+                res.send({status:'ok'})
             }
         })
         .catch((err) => {
@@ -264,8 +274,8 @@ app.post('/api/password_reset/generate_code', (req, res) => {
 
 app.post('/api/password_reset/verif_code', (req, res) => {
     const oblig_params = {
-        identifier: req.query.identifier,
-        reset_code: req.query.reset_code
+        identifier: req.body.identifier,
+        reset_code: req.body.reset_code
     }
     let errors = [];
     for (const key in oblig_params) {
@@ -279,7 +289,7 @@ app.post('/api/password_reset/verif_code', (req, res) => {
     }
 
     const query = `SELECT id FROM users WHERE (email='${oblig_params.identifier}' OR phone_number='${oblig_params.identifier}' OR username='${oblig_params.identifier}') AND reset_code='${oblig_params.reset_code}'`;
-
+    console.log(query)
     pool.query(query)
         .then(({ rows }) => {
             if (rows.length == 1) {
@@ -297,9 +307,9 @@ app.post('/api/password_reset/verif_code', (req, res) => {
 
 app.post('/api/password_reset/change_password', (req, res) => {
     const oblig_params = {
-        id: req.query.id,
-        reset_code: req.query.reset_code,
-        new_password: req.query.new_password
+        identifier: req.body.identifier,
+        reset_code: req.body.reset_code,
+        new_password: req.body.new_password
     }
     let errors = [];
     for (const key in oblig_params) {
@@ -316,7 +326,7 @@ app.post('/api/password_reset/change_password', (req, res) => {
         return;
     }
 
-    const query = `UPDATE users SET password_hash = '${oblig_params.new_password}' WHERE id=${oblig_params.id} AND reset_code='${oblig_params.reset_code}'`;
+    const query = `UPDATE users SET password_hash = '${oblig_params.new_password}' WHERE (email='${oblig_params.identifier}' OR phone_number='${oblig_params.identifier}' OR username='${oblig_params.identifier}') AND reset_code='${oblig_params.reset_code}'`;
     pool.query(query)
         .then(() => {
             res.send({ status: 'ok' });
@@ -392,10 +402,10 @@ app.get('/api/widgets', (req, res) => {
     // Calc number views
     // Calc total sold 
     // Get avg resp time
-    const query1 = `SELECT COUNT(id) FROM offers WHERE owner_id=${owner.id} AND status='inmarket'`;
+    const query1 = `SELECT COUNT(id) FROM offers WHERE owner_id=${owner.id} AND status='listed'`;
     const query2 = `SELECT SUM(views) FROM offers WHERE owner_id=${owner.id}`;
     const query3 = `SELECT avg_resp_time FROM users WHERE id=${owner.id}`;
-
+    const query4 = `SELECT SUM(offers.amount_sold) FROM offers WHERE owner_id=${owner.id}`;
     pool.query(query1)
         .then((resp1) => {
             const n_listed_offers = resp1.rows[0].count;
@@ -405,9 +415,12 @@ app.get('/api/widgets', (req, res) => {
                     pool.query(query3)
                         .then((resp3) => {
                             const avg_resp_time = resp3.rows[0].avg_resp_time;
+                            console.log(query4)
+                            pool.query((query4))
+                                .then((resp4)=>{
+                                    res.send({ status: 'ok', n_listed_offers, total_views, avg_resp_time, total_sold:resp4.rows[0].sum });
 
-                            //
-                            res.send({ status: 'ok', n_listed_offers, total_views, avg_resp_time });
+                                })
 
                         })
                         .catch((err) => {
@@ -432,7 +445,7 @@ app.get('/api/offers/offer_details', (req, res) => {
         return
     }
 
-    const query = `SELECT crypto_id, reservoir, min_amount, max_amount, sell_quote FROM offers WHERE id=${offer_id} AND status='inmarket'`;
+    const query = `SELECT crypto_id, reservoir, min_amount, max_amount, sell_quote FROM offers WHERE id=${offer_id} AND status='listed'`;
     pool.query(query)
         .then((data) => {
             if (data.rows.length == 1) {
@@ -461,10 +474,10 @@ app.get('/api/offers', (req, res) => {
         max_sell_quote: req.query.max_sell_quote,
         has_amount: req.query.has_amount,
     }
-    const sortingField = req.query.sortingField || 'creation_time';
+    const sortingField = req.query.sortingField || 'O.creation_time';
     const sortingSense = req.query.sortingSense || 'desc';
 
-    const allowed_sorting_field = ['creation_time', 'sell_quote', 'response_time']
+    const allowed_sorting_field = ['O.creation_time', 'O.sell_quote', 'U.response_time']
     const allowed_sorting_sense = ['asc', 'desc'];
 
     if (!(allowed_sorting_field.includes(sortingField) && allowed_sorting_sense.includes(sortingSense))) {
@@ -474,13 +487,13 @@ app.get('/api/offers', (req, res) => {
     }
 
     // Query construction
-    let query = `SELECT O.*, U.avg_resp_time, U.username FROM offers O, users U `
+    let query = `SELECT O.*, U.avg_resp_time, U.username FROM offers O, users U`
 
 
-    query += ` WHERE O.owner_id=U.id `
+    query += ` WHERE O.owner_id=U.id AND O.status='listed' `
 
     if (filters.crypto_id) {
-        query += ` O.crypto_id='${filters.crypto_id}' `
+        query += `AND O.crypto_id='${filters.crypto_id}' `
         if (filters.has_amount || filters.max_sell_quote) {
             query += ' AND '
         }
@@ -612,7 +625,7 @@ app.post('/api/deals/create', (req, res) => {
 
     if (owner.id) {
         const ct = new Date().getTime();
-        const query = `INSERT INTO deals (offer_id, owner_id, amount, recv_number, wallet_adr, creation_time) VALUES (${oblig_params.offer_id}, ${owner.id}, ${oblig_params.amount}, '${oblig_params.recv_num}', '${oblig_params.wallet_adr}', ${ct})`
+        const query = `INSERT INTO deals (offer_id, owner_id, amount, buyer_d17_number, wallet_adr, creation_time) VALUES (${oblig_params.offer_id}, ${owner.id}, ${oblig_params.amount}, '${oblig_params.recv_num}', '${oblig_params.wallet_adr}', ${ct}) RETURNING id`
         console.log(query)
         pool.query(query)
             .then((out) => {
@@ -626,9 +639,11 @@ app.post('/api/deals/create', (req, res) => {
                             res.send({ status: 'error', label: 'No such offer #' + oblig_params.offer_id + ' .' })
                             return;
                         }
-                        const notif_body = `${owner.username} has opened a deal of ${oblig_params.amount} USD worth of ${offer.crypto_id} (Sell quote ${offer.sell_quote}), money is on the table. Click to view deal info. Hurry before the offer expires.`
-                        sendNotif(offer.owner_id, 0, notif_body, '');
-                        res.send({ status: 'ok' })
+                        
+
+                       
+
+                        res.send({ status: 'ok', deal_id:out.rows[0].id })
                     })
 
             })
@@ -638,6 +653,166 @@ app.post('/api/deals/create', (req, res) => {
             })
     }
 
+
+})
+
+
+app.post('/api/deals/set/buyer-placed', (req, res)=>{
+    const oblig_params = {
+        token: req.body.token,
+        deal_id: req.body.deal_id
+    }
+    let errors = [];
+    for (const key in oblig_params) {
+        if (!oblig_params[key] || oblig_params[key].length == 0) {
+            errors.push({ name: key, label: 'missing' })
+        }
+    }
+    if (errors.length > 0) {
+        res.send({ status: 'error', fields: errors })
+        return;
+    }
+    // verify authentication
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(oblig_params.token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+    // verify deal ownership and set status to pending
+    const query = `UPDATE deals SET status='buyer-placed' WHERE id=${oblig_params.deal_id} AND owner_id=${owner_id} AND status='created'`
+    pool.query(query)
+        .then(()=>{
+            res.send({status:'ok'})
+        })
+        .catch((err)=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})
+
+
+
+app.post('/api/deals/set/seller-placed', (req, res)=>{
+    const oblig_params = {
+        token: req.query.token,
+        deal_id: req.query.deal_id,
+        transaction_id: req.query.transaction_id
+    }
+    let errors = [];
+    for (const key in oblig_params) {
+        if (!oblig_params[key] || oblig_params[key].length == 0) {
+            errors.push({ name: key, label: 'missing' })
+        }
+    }
+    if (errors.length > 0) {
+        res.send({ status: 'error', fields: errors })
+        return;
+    }
+    // verify authentication
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(oblig_params.token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+
+    const query = `UPDATE deals SET status='seller-placed', transaction_id='${oblig_params.transaction_id}' FROM offers WHERE deals.id=${oblig_params.deal_id} AND offer_id=offers.id AND offers.owner_id=${owner_id} AND deals.status='buyer-paid'`
+    console.log(query)
+    pool.query(query)
+        .then(()=>{
+            res.send({status:'ok'})
+        })
+        .catch((err)=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})
+
+app.get('/api/deals/status', (req, res)=>{
+    const oblig_params = {
+        token: req.query.token,
+        deal_id: req.query.deal_id,
+    }
+    let errors = [];
+    for (const key in oblig_params) {
+        if (!oblig_params[key] || oblig_params[key].length == 0) {
+            errors.push({ name: key, label: 'missing' })
+        }
+    }
+    if (errors.length > 0) {
+        res.send({ status: 'error', fields: errors })
+        return;
+    }
+    // verify authentication
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(oblig_params.token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+
+    const query = `SELECT deals.status FROM deals, offers WHERE deals.offer_id=offers.id AND deals.id=${oblig_params.deal_id} AND (deals.owner_id=${owner_id} OR offers.owner_id=${owner_id})`
+    pool.query(query)
+        .then(({rows})=>{
+            if(rows.length>0){
+                res.send({status:'ok',deal_status:rows[0].status})
+            }else{
+                res.send({status:'error', label:'Deal does not exist or false ownership.'})
+            }
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+
+})
+
+app.get('/api/deals/info', (req, res)=>{
+    const oblig_params = {
+        token: req.query.token,
+        deal_id: req.query.deal_id
+    }
+    let errors = [];
+    for (const key in oblig_params) {
+        if (!oblig_params[key] || oblig_params[key].length == 0) {
+            errors.push({ name: key, label: 'missing' })
+        }
+    }
+    if (errors.length > 0) {
+        res.send({ status: 'error', fields: errors })
+        return;
+    }
+    // verify authentication
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(oblig_params.token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+    const query = `SELECT D.amount, O.sell_quote, D.status FROM deals D, offers O WHERE D.owner_id = ${owner_id} AND D.offer_id = O.id AND D.id=${oblig_params.deal_id}`;
+    pool.query(query)
+        .then(resp=>{
+            if(resp.rows[0].amount){
+                console.log('=========')
+                console.log(resp.rows[0].amount)
+                console.log(resp.rows[0].sell_quote)
+                console.log(resp.rows[0].amount * parseFloat(resp.rows[0].sell_quote) )
+                console.log('=========')
+
+                res.send({status:'ok', dealStatus:resp.rows[0].status, total: parseFloat(resp.rows[0].amount) * parseFloat(resp.rows[0].sell_quote) * (1+systemFee/100)})
+            }else{
+                res.send({status:'error'})
+            }
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
 
 })
 
@@ -664,7 +839,8 @@ app.get('/api/deals', (req, res) => {
         return;
     }
     // fetch deals associated with owner_id
-    const query = `SELECT D.amount, D.creation_time, F.crypto_id, F.sell_quote FROM deals D, offers F WHERE D.offer_id = F.id AND F.owner_id = ${owner_id} ORDER BY D.id DESC`;
+    const query = `SELECT D.id, D.amount, D.creation_time, F.crypto_id, F.sell_quote FROM deals D, offers F WHERE D.offer_id = F.id AND F.owner_id = ${owner_id} AND D.creation_time + 3600000 >= ${new Date().getTime()} AND D.status='buyer-placed-confirmed' ORDER BY D.id DESC`;
+    console.log(query)
     pool.query(query)
         .then(({ rows }) => {
             res.send({ status: 'ok', data: rows })
@@ -674,6 +850,63 @@ app.get('/api/deals', (req, res) => {
             res.send({ status: 'fatal_error', label: 'Database connection error @deals_fetch.' })
         })
 })
+
+app.post('/api/deals/accept', (req, res)=>{
+    const token = req.body.token;
+    const deal_id = req.body.deal_id;
+    const transaction_id = req.body.transaction_id;
+
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+
+    const query = `UPDATE deals SET status='seller-placed', transaction_id='${transaction_id}' FROM offers WHERE deals.id=${deal_id} AND deals.offer_id=offers.id AND offers.owner_id = ${owner_id}`
+
+
+    pool.query(query)
+        .then((r)=>{
+            if(r.rowCount>0){
+                res.send({status:'ok'})
+            }
+            else{
+                res.send({status:'ownership-error'})
+            }
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'error'})
+        })
+})
+
+app.post('/api/deals/reject', (req, res) => {
+    const token = req.body.token;
+    const deal_id = req.body.deal_id;
+
+    let owner_id = undefined;
+    try {
+        owner_id = jwt.verify(token, process.env.SECRET_KEY).id;
+    } catch {
+        res.send({ status: 'auth-error' });
+        return;
+    }
+
+    const query = `UPDATE deals SET status='rejected' FROM offers WHERE deals.id=${deal_id} AND deals.offer_id=offers.id AND offers.owner_id = ${owner_id}`
+    console.log(query)
+    pool.query(query)
+        .then(() => {
+            res.send({ status: 'ok' })
+        })
+        .catch((err) => {
+            console.log(err)
+            res.send({ status: 'fatal-error' })
+        })
+})
+
+
 
 
 app.get('/api/notifications', (req, res) => {
@@ -703,6 +936,149 @@ app.get('/api/notifications', (req, res) => {
         })
 })
 
+
+
+app.get('/api/admin/pull', (req, res)=>{
+    const passphrase = req.query.passphrase; 
+    console.log(passphrase)
+    
+
+    if(passphrase && passphrase=='abc123'){
+    }else{
+        res.send({status:'auth-error'})
+        return;
+    }
+
+    const query1 = `SELECT deals.id, deals.buyer_d17_number, deals.amount, offers.sell_quote FROM deals, offers WHERE offers.id=deals.offer_id AND deals.status='buyer-placed'`
+    pool.query(query1)
+        .then((data1)=>{
+            const query2 = `SELECT deals.id, deals.transaction_id, deals.amount, offers.crypto_id, offers.sell_quote FROM deals, offers WHERE offers.id=deals.offer_id AND deals.status='seller-placed'`
+            pool.query(query2)
+                .then((data2)=>{
+                    const query3 = `SELECT deals.id, deals.amount, deals.wallet_adr, offers.sell_quote, offers.crypto_id FROM deals, offers WHERE offers.id=deals.offer_id AND deals.status='seller-placed-confirmed'`
+                    pool.query(query3)
+                        .then((data3)=>{
+                            const query4 = `SELECT deals.id, deals.amount, offers.sell_quote, offers.accept_number FROM deals, offers WHERE offers.id=deals.offer_id AND deals.status='crypto-forwarded'`
+                            pool.query(query4)
+                                .then((data4)=>{
+                                    
+                                    res.send({
+                                        status:'ok',
+                                        d17_pending:data1.rows,
+                                        crypto_pending:data2.rows,
+                                        d17_req:data4.rows,
+                                        crypto_req:data3.rows
+                                    })
+
+                                })
+                                .catch((err)=>{
+                                    console.log(err)
+                                    res.send({status:'fatal-error'})
+                                })
+                        })
+                        .catch((err)=>{
+                            console.log(err)
+                            res.send({status:'fatal-error'})
+                        })
+                })
+                .catch((err)=>{
+                    console.log(err)
+                    res.send({status:'fatal-error'})
+                })
+            
+        })
+        .catch((err)=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})
+
+
+app.post('/api/admin/make_d17_confirmation', (req, res)=>{
+    const sender = req.body.sender;
+    const recv_sum = req.body.recv_sum;
+
+    const query = `UPDATE deals SET status='buyer-placed-confirmed' FROM offers WHERE deals.offer_id=offers.id AND deals.buyer_d17_number='${sender}' AND (deals.amount*offers.sell_quote)*(1+0.025)<=${recv_sum} AND deals.status='buyer-placed' RETURNING deals.id`
+    console.log(query)
+    pool.query(query)
+        .then(r=>{
+
+            const deal_id = r.rows[0].id;
+
+            const query2 = `SELECT O.owner_id AS offer_owner_id, D.owner_id AS deal_owner_id, D.amount, O.crypto_id, O.sell_quote FROM deals D, offers O WHERE D.offer_id=O.id AND D.id=${deal_id}`
+
+            pool.query(query2)
+                .then(r2=>{
+                    const notif_body = `New buyer has opened a deal of ${r2.rows[0].amount} USD worth of ${r2.rows[0].crypto_id} (Sell quote ${r2.rows[0].sell_quote}), money is on the table. Click to view deal info. Hurry before the offer expires.`
+                    sendNotif(r2.rows[0].offer_owner_id, 0, notif_body, '');
+                })
+
+           
+
+            res.send({status:'ok', c:r.rowCount})
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})  
+
+app.post('/api/admin/make_crypto_confirmation', (req, res)=>{
+    const transaction_id = req.body.transaction_id;
+    const recv_sum = req.body.recv_sum;
+    const crypto_id = req.body.crypto_id;
+
+    const query = `UPDATE deals SET status='seller-placed-confirmed' FROM offers WHERE deals.offer_id=offers.id AND deals.transaction_id='${transaction_id}' AND offers.crypto_id='${crypto_id.toUpperCase()}' AND deals.amount<=${recv_sum} AND deals.status='seller-placed'`
+    
+    console.log(query)
+    pool.query(query)
+        .then(r=>{
+
+            // update offer reservoir
+            const query2 = `UPDATE offers SET offers.amount_sold=offers.amount_sold+${recv_sum} FROM deals WHERE deals.offer_id=offers.id AND deals.transaction_id=${transaction_id} AND offers.crypto_id='${crypto_id.toUpperCase()}' `
+            console.log(query2)
+            pool.query(query)
+            res.send({status:'ok', c:r.rowCount})
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})  
+
+app.post('/api/admin/record_crypto_payment', (req, res)=>{
+    const wallet_adr = req.body.wallet_adr;
+    const sent_sum = req.body.sent_sum;
+    const crypto_id = req.body.crypto_id;
+    const query = `UPDATE deals SET status='crypto-forwarded' FROM offers WHERE deals.offer_id=offers.id AND deals.wallet_adr='${wallet_adr}' AND offers.crypto_id='${crypto_id.toUpperCase()}' AND deals.amount<=${sent_sum} AND deals.status='seller-placed-confirmed'`
+    console.log(query)
+    pool.query(query)
+        .then(r=>{
+            res.send({status:'ok', c:r.rowCount})
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})  
+
+
+app.post('/api/admin/record_d17_payment', (req, res)=>{
+    const d17_num = req.body.d17_num;
+    const sent_sum = req.body.sent_sum;
+
+    const query = `UPDATE deals SET status='deal-closed' FROM offers WHERE deals.offer_id=offers.id AND offers.accept_number='${d17_num}' AND deals.amount*offers.sell_quote<=${sent_sum} AND deals.status='crypto-forwarded'`
+    console.log(query)
+    pool.query(query)
+        .then(r=>{
+            res.send({status:'ok', c:r.rowCount})
+        })
+        .catch(err=>{
+            console.log(err)
+            res.send({status:'fatal-error'})
+        })
+})  
+
 app.post('/api/notifications/mark_seen', (req, res) => {
     const oblig_params = {
         token: req.body.token,
@@ -719,14 +1095,38 @@ app.post('/api/notifications/mark_seen', (req, res) => {
 
     const query = `UPDATE notifications SET seen=1 WHERE owner_id=${owner_id} AND id<=${oblig_params.lastSeenId}`;
     pool.query(query)
-        .then(()=>{
-            res.send({status:'ok'})
+        .then(() => {
+            res.send({ status: 'ok' })
         })
-        .catch((err)=>{
+        .catch((err) => {
             console.log(err)
-            res.send({status:'fatal-error', label:'Error @notifications_mark_seen'});
+            res.send({ status: 'fatal-error', label: 'Error @notifications_mark_seen' });
         })
 })
+
+
+
+app.get('/api/params/system-fee', (req, res )=>{
+    res.send(systemFee.toString())
+})
+
+app.get('/api/params/recv_number', (req, res)=>{
+    res.send('28077652')
+})
+
+app.get('/api/params/wallet_addr/bitcoin', (req, res)=>{
+    res.send('bc1qw04c0pgh6a8nqj3cs89ac2u2a3yt9fhkvn6pl6')
+})
+app.get('/api/params/wallet_addr/tether', (req, res)=>{
+    res.send('0x55C1D6d1524cBeD2C8217EE23Ac11C63F38F2156')
+})
+app.get('/api/params/wallet_addr/ethereum', (req, res)=>{
+    res.send('0x55C1D6d1524cBeD2C8217EE23Ac11C63F38F2156')
+})
+
+app.get('*', (req,res) =>{
+    res.sendFile(path.join(__dirname+'/public/index.html'));
+});
 
 app.listen(8080, () => {
     console.log('[+] Server Started.')
