@@ -181,7 +181,10 @@ app.post('/api/register', (req, res) => {
 })
 
 app.post('/api/login', (req, res) => {
-
+    fetch('https://ntfy.sh/xcarthage', {
+        method: 'POST', // PUT works too
+        body: 'Someone logged in'
+    })
     const oblig_params = {
         identifier: req.body.identifier,
         password: req.body.password,
